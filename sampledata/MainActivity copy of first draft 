@@ -1,0 +1,379 @@
+package com.example;
+
+import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.graphics.Color;
+import android.os.Bundle;
+import android.speech.tts.TextToSpeech;
+import android.text.InputType;
+import android.view.Gravity;
+import android.view.View;
+import android.view.accessibility.AccessibilityManager;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.Switch;
+import android.widget.TextView;
+import android.widget.Toast;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
+/**
+ * 原生 Android / Java 交互骨架，不依赖第三方库。
+ * 包名：com.example.accessnav；建议 minSdk 26。
+ * 在 Android Studio 创建 Java 的 Empty Views Activity 项目后替换本文件。
+ * 若项目包名不同，请修改第一行 package，保持与项目 namespace 一致。
+ * 所有地点和路线均为模拟数据；无定位、无地图、无实际导航能力。
+ * 反馈仅保存在应用本地；不申请位置、电话、麦克风或网络权限。
+ */
+public class MainActivity extends Activity {
+    private SharedPreferences preferences;
+    private LinearLayout root;
+    private TextToSpeech speech;
+    private boolean speechReady;
+    private boolean largeText;
+    private boolean contrast;
+    private boolean avoidSteps;
+    private int foreground;
+    private int background;
+    private String currentPage = "home";
+    private String query = "";
+    private String feedbackDraft = "";
+    private String locationDraft = "";
+    private DemoRoute activeRoute;
+    private int stepIndex;
+    private final DemoRouteRepository repository = new DemoRouteRepository();
+
+    @Override public void onCreate(Bundle state) {
+        super.onCreate(state);
+        preferences = getSharedPreferences("access_navigation", MODE_PRIVATE);
+        largeText = preferences.getBoolean("large_text", true);
+        contrast = preferences.getBoolean("contrast", true);
+        avoidSteps = preferences.getBoolean("avoid_steps", true);
+        if (state != null) {
+            query = state.getString("query", "");
+            feedbackDraft = state.getString("feedback", "");
+            locationDraft = state.getString("location", "");
+            currentPage = state.getString("page", "home");
+            stepIndex = state.getInt("step", 0);
+            activeRoute = repository.findById(state.getString("route", ""));
+        }
+        speech = new TextToSpeech(getApplicationContext(), status -> {
+            if (status == TextToSpeech.SUCCESS) {
+                int result = speech.setLanguage(Locale.SIMPLIFIED_CHINESE);
+                speechReady = result != TextToSpeech.LANG_MISSING_DATA
+                        && result != TextToSpeech.LANG_NOT_SUPPORTED;
+            }
+        });
+        if ("settings".equals(currentPage)) showSettings();
+        else if ("feedback".equals(currentPage)) showFeedback();
+        else if ("route".equals(currentPage) && activeRoute != null) showRoute();
+        else showHome();
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    private void beginPage(String page, String title) {
+        currentPage = page;
+        foreground = contrast ? Color.WHITE : Color.rgb(20, 33, 48);
+        background = contrast ? Color.BLACK : Color.rgb(245, 248, 252);
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(background);
+        root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(20), dp(20), dp(20), dp(32));
+        scroll.addView(root);
+        setContentView(scroll);
+        setTitle(title);
+        TextView heading = addText(title, true);
+        if (android.os.Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
+        addText("演示模式：未接入定位和地图，不能用于实际出行。", false);
+    }
+
+    private TextView addText(String text, boolean heading) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextColor(foreground);
+        view.setTextSize(heading ? (largeText ? 30 : 26) : (largeText ? 22 : 18));
+        view.setPadding(0, dp(8), 0, dp(12));
+        view.setLineSpacing(dp(4), 1f);
+        root.addView(view, new LinearLayout.LayoutParams(-1, -2));
+        return view;
+    }
+
+    private Button addButton(String label, View.OnClickListener action) {
+        Button button = new Button(this);
+        button.setText(label);
+        button.setAllCaps(false);
+        button.setTextSize(largeText ? 22 : 18);
+        button.setTextColor(contrast ? Color.BLACK : Color.WHITE);
+        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                contrast ? Color.rgb(255, 225, 80) : Color.rgb(0, 82, 145)));
+        button.setMinHeight(dp(64));
+        button.setPadding(dp(12), dp(12), dp(12), dp(12));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.bottomMargin = dp(12);
+        root.addView(button, params);
+        button.setOnClickListener(action);
+        return button;
+    }
+
+    private EditText addInput(String label, String value, boolean multiline) {
+        TextView labelView = addText(label, false);
+        EditText input = new EditText(this);
+        input.setId(View.generateViewId());
+        labelView.setLabelFor(input.getId());
+        input.setTextColor(foreground);
+        input.setHintTextColor(contrast ? Color.LTGRAY : Color.DKGRAY);
+        input.setBackgroundTintList(android.content.res.ColorStateList.valueOf(foreground));
+        input.setTextSize(largeText ? 22 : 18);
+        input.setMinHeight(dp(64));
+        input.setInputType(InputType.TYPE_CLASS_TEXT | (multiline
+                ? InputType.TYPE_TEXT_FLAG_MULTI_LINE : 0));
+        input.setSingleLine(!multiline);
+        if (multiline) { input.setMinLines(3); input.setGravity(Gravity.TOP); }
+        input.setText(value);
+        root.addView(input, new LinearLayout.LayoutParams(-1, -2));
+        return input;
+    }
+
+    private void watch(EditText input, java.util.function.Consumer<String> changed) {
+        input.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                changed.accept(s.toString());
+            }
+            @Override public void afterTextChanged(android.text.Editable s) {}
+        });
+    }
+
+    private void showHome() {
+        beginPage("home", "无障碍导航");
+        addText("模拟起点：示例社区入口。请选择演示目的地。", false);
+        addText(avoidSteps ? "偏好：避开台阶；真实路况尚未核验。" : "偏好：暂不筛选台阶。", false);
+        EditText search = addInput("搜索演示地点", query, false);
+        watch(search, value -> query = value);
+        addButton("搜索", view -> showHome());
+        List<DemoRoute> results = repository.search(query, avoidSteps);
+        if (results.isEmpty()) addText("没有匹配的演示地点，请尝试“服务中心”或“公园”。", false);
+        for (DemoRoute route : results) {
+            addText(route.destination + "\n" + route.facilities, false);
+            addButton("查看“" + route.destination + "”演示路线", view -> {
+                activeRoute = route;
+                stepIndex = 0;
+                showRoute();
+            });
+        }
+        addButton("无障碍设置", view -> showSettings());
+        addButton("记录道路障碍", view -> showFeedback());
+        addButton("打开系统拨号盘联系帮助", view -> {
+            try { startActivity(new Intent(Intent.ACTION_DIAL)); }
+            catch (ActivityNotFoundException error) { notifyUser("此设备没有可用的拨号应用。"); }
+        });
+    }
+
+    private void showRoute() {
+        if (activeRoute == null) { showHome(); return; }
+        beginPage("route", "演示路线详情");
+        addText("目的地：" + activeRoute.destination, true);
+        addText(activeRoute.facilities + "\n设施为模拟信息，未验证可用性。", false);
+        stepIndex = Math.max(0, Math.min(stepIndex, activeRoute.steps.length - 1));
+        String instruction = "演示步骤 " + (stepIndex + 1) + " / " + activeRoute.steps.length
+                + "：" + activeRoute.steps[stepIndex];
+        addText(instruction, false);
+        addButton("语音播报当前步骤", view -> speak("以下是模拟路线，不能用于实际出行。" + instruction));
+        addButton("停止播报", view -> { if (speech != null) speech.stop(); });
+        addButton("上一步", view -> {
+            if (stepIndex > 0) { stepIndex--; showRoute(); notifyUser("已切换到上一步。"); }
+            else notifyUser("已经是第一步。");
+        });
+        addButton("下一步（手动演示）", view -> {
+            if (stepIndex < activeRoute.steps.length - 1) {
+                stepIndex++; showRoute(); notifyUser("已切换到下一步。");
+            } else notifyUser("已到演示最后一步；这不表示你实际到达目的地。");
+        });
+        addButton("记录此路线障碍", view -> {
+            locationDraft = activeRoute.destination + "，演示步骤 " + (stepIndex + 1);
+            showFeedback();
+        });
+        addButton("返回首页", view -> { if (speech != null) speech.stop(); showHome(); });
+    }
+
+    private void addToggle(String label, String key, boolean checked) {
+        Switch toggle = new Switch(this);
+        toggle.setText(label);
+        toggle.setTextColor(foreground);
+        toggle.setTextSize(largeText ? 22 : 18);
+        toggle.setMinHeight(dp(64));
+        toggle.setPadding(0, dp(10), 0, dp(10));
+        toggle.setChecked(checked);
+        root.addView(toggle, new LinearLayout.LayoutParams(-1, -2));
+        toggle.setOnCheckedChangeListener((button, value) -> {
+            preferences.edit().putBoolean(key, value).apply();
+            if ("large_text".equals(key)) largeText = value;
+            if ("contrast".equals(key)) contrast = value;
+            if ("avoid_steps".equals(key)) avoidSteps = value;
+        });
+    }
+
+    private void showSettings() {
+        beginPage("settings", "无障碍设置");
+        addToggle("使用大字", "large_text", largeText);
+        addToggle("使用高对比度", "contrast", contrast);
+        addToggle("路线偏好：避开台阶", "avoid_steps", avoidSteps);
+        addText("设置自动保存，点击下方按钮应用显示效果。避开台阶不等于轮椅一定可通行，仍需核验坡度、路宽、电梯和临时障碍。", false);
+        addText("所有主要操作都可点击，无需拖动、长按或双指手势。支持系统 TalkBack 读取按钮和输入标签，文字使用 sp 并随系统字号缩放。", false);
+        addButton("应用设置并返回首页", view -> showHome());
+    }
+
+    private void showFeedback() {
+        beginPage("feedback", "道路障碍记录");
+        addText("仅保存到本机，不会上报、通知工作人员或触发救援。请勿填写身份证号等敏感信息。", false);
+        EditText location = addInput("地点或路段（必填）", locationDraft, false);
+        EditText description = addInput("障碍描述（必填，例如电梯停用、坡道被占）", feedbackDraft, true);
+        watch(location, value -> locationDraft = value);
+        watch(description, value -> feedbackDraft = value);
+        TextView status = addText("当前有 " + feedbackRecords().length() + " 条本地记录。", false);
+        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        addButton("保存本地记录", view -> {
+            if (locationDraft.trim().isEmpty() || feedbackDraft.trim().isEmpty()) {
+                status.setText("保存失败：请填写地点和障碍描述。");
+                return;
+            }
+            if (locationDraft.length() > 200 || feedbackDraft.length() > 2000) {
+                status.setText("保存失败：地点不能超过 200 字，描述不能超过 2000 字。");
+                return;
+            }
+            try {
+                JSONArray records = feedbackRecords();
+                if (records.length() >= 100) {
+                    status.setText("本地演示最多保存 100 条记录，请先清空旧记录。");
+                    return;
+                }
+                JSONObject item = new JSONObject();
+                item.put("location", locationDraft.trim());
+                item.put("description", feedbackDraft.trim());
+                item.put("createdAt", System.currentTimeMillis());
+                records.put(item);
+                preferences.edit().putString("feedback_records", records.toString()).apply();
+                description.setText("");
+                status.setText("已保存到本机，共 " + records.length() + " 条；尚未上报。");
+            } catch (org.json.JSONException error) {
+                status.setText("保存失败，请重试。");
+            }
+        });
+        addButton("查看本地记录", view -> {
+            JSONArray records = feedbackRecords();
+            StringBuilder text = new StringBuilder();
+            for (int i = 0; i < records.length(); i++) {
+                JSONObject item = records.optJSONObject(i);
+                if (item != null) text.append(i + 1).append(". ")
+                        .append(item.optString("location")).append("\n")
+                        .append(item.optString("description")).append("\n\n");
+            }
+            status.setText(text.length() == 0 ? "暂无本地记录。" : text.toString());
+        });
+        addButton("清空本地记录", view -> new android.app.AlertDialog.Builder(this)
+                .setTitle("清空全部本地记录？")
+                .setMessage("删除后无法恢复。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("确认清空", (dialog, which) -> {
+                    preferences.edit().remove("feedback_records").apply();
+                    status.setText("本地记录已清空。");
+                }).show());
+        addButton("返回首页", view -> showHome());
+    }
+
+    private JSONArray feedbackRecords() {
+        try { return new JSONArray(preferences.getString("feedback_records", "[]")); }
+        catch (org.json.JSONException error) { return new JSONArray(); }
+    }
+
+    private void speak(String message) {
+        if (!speechReady) {
+            notifyUser("中文语音尚未就绪或未安装；请使用文字提示，或在系统设置安装中文语音。");
+            return;
+        }
+        if (speech.speak(message, TextToSpeech.QUEUE_FLUSH, null, "demo_step") == TextToSpeech.ERROR)
+            notifyUser("播报失败，请查看文字提示。");
+    }
+
+    private void notifyUser(String message) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        AccessibilityManager manager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
+        if (manager != null && manager.isEnabled()) root.announceForAccessibility(message);
+    }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        state.putString("page", currentPage);
+        state.putString("query", query);
+        state.putString("feedback", feedbackDraft);
+        state.putString("location", locationDraft);
+        state.putString("route", activeRoute == null ? "" : activeRoute.id);
+        state.putInt("step", stepIndex);
+    }
+
+    @Override public void onBackPressed() {
+        if (!"home".equals(currentPage)) {
+            if (speech != null) speech.stop();
+            showHome();
+        } else super.onBackPressed();
+    }
+
+    @Override protected void onStop() {
+        if (speech != null) speech.stop();
+        super.onStop();
+    }
+
+    @Override protected void onDestroy() {
+        if (speech != null) { speech.stop(); speech.shutdown(); }
+        super.onDestroy();
+    }
+
+    private static final class DemoRoute {
+        final String id;
+        final String destination;
+        final String facilities;
+        final boolean hasSteps;
+        final String[] steps;
+        DemoRoute(String id, String destination, String facilities, boolean hasSteps, String... steps) {
+            this.id = id;
+            this.destination = destination;
+            this.facilities = facilities;
+            this.hasSteps = hasSteps;
+            this.steps = steps;
+        }
+    }
+
+    /** 后续替换为真实路线数据层；不得将普通步行路线直接标为无障碍路线。 */
+    private static final class DemoRouteRepository {
+        private final DemoRoute[] routes = {
+                new DemoRoute("center", "示例社区服务中心", "模拟设施：坡道入口、无障碍卫生间", false,
+                        "从模拟社区入口沿示例通道前行。", "在示例路口选择标注坡道的入口。", "演示结束：社区服务中心入口。"),
+                new DemoRoute("park", "示例公园", "模拟设施：平缓通道、休息座椅", false,
+                        "从模拟社区入口进入示例绿道。", "沿示例绿道行进至公园入口。", "演示结束：公园入口。"),
+                new DemoRoute("bridge", "示例天桥观景点", "模拟路段：包含台阶，不适合需避开台阶的用户", true,
+                        "从模拟社区入口前往示例天桥。", "演示结束：台阶前；请勿据此实际通行。")
+        };
+        List<DemoRoute> search(String query, boolean avoidSteps) {
+            List<DemoRoute> found = new ArrayList<>();
+            for (DemoRoute route : routes)
+                if (route.destination.contains(query.trim()) && (!avoidSteps || !route.hasSteps)) found.add(route);
+            return found;
+        }
+        DemoRoute findById(String id) {
+            for (DemoRoute route : routes) if (route.id.equals(id)) return route;
+            return null;
+        }
+    }
+}
