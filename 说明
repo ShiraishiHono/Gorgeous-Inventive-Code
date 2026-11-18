@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+三层全连接神经网络手写数字识别（MNIST，类别 0～9）。
+层数按输入层、隐藏层、输出层计算：784 -> 128 -> 10。
+核心网络、反向传播、Adam 均用 NumPy 实现，不使用深度学习框架。
+
+运行（请将命令中的文件名替换为实际保存的文件名）：
+  python 三层神经网络手写数字识别.py train
+  python 三层神经网络手写数字识别.py evaluate
+  python 三层神经网络手写数字识别.py predict --image digit.png
+  python 三层神经网络手写数字识别.py gui
+  python 三层神经网络手写数字识别.py gradcheck
+
+默认数据：首次联网自动下载，后续读取 ./mnist_data 中的缓存。
+默认输出：./outputs/mnist_mlp.npz、history.csv、training_curves.png、
+          confusion_matrix.csv、confusion_matrix.png。
+评估时自动下载缺失的测试数据。predict/gui 不需要下载 MNIST。
+只识别单个阿拉伯数字，不支持直接识别多位数、整行文字或汉字。
+
+一、矩阵约定（每行一个样本）
+  X: (B,784), W1: (784,H), b1: (1,H)
+  W2: (H,10), b2: (1,10)
+  Z1 = X @ W1 + b1
+  A1 = ReLU(Z1)
+  Z2 = A1 @ W2 + b2
+  P  = softmax(Z2)，按行计算，先减去每行最大值防止溢出。
+
+二、目标函数与反向传播
+  L = -mean(log(P[i,y[i]])) + lambda/2 * (sum(W1^2)+sum(W2^2))
+  D2 = (P - one_hot(y))/B
+  dW2 = A1.T @ D2 + lambda*W2; db2 = sum(D2,axis=0)
+  D1 = (D2 @ W2.T) * (Z1 > 0)
+  dW1 = X.T @ D1 + lambda*W1; db1 = sum(D1,axis=0)
+  正则化不施加在偏置上。上述梯度来自同一次前向传播的参数。
+
+三、默认参数依据
+  H=128：兼顾非线性表达能力、CPU 开销和参数量（101770 个）。
+  batch_size=128：小批量梯度噪声与矩阵运算效率之间的常用折中。
+  Adam lr=0.001, beta1=0.9, beta2=0.999, eps=1e-8：常用起点。
+  epochs=20：训练上限，按验证集交叉熵早停，patience=5。
+  L2=1e-4：较弱的权重约束；最终应根据验证集调参，而非测试集。
+  W1 用 He 初始化，W2 用 Xavier 方差尺度初始化，偏置全零。
+  训练集 55000 / 验证集 5000 / 独立测试集 10000，随机种子 42。
+  所有像素转 float32 并除以 255，不在测试集上选择超参数。
+
+四、优化器
+  m_t=beta1*m_(t-1)+(1-beta1)*g_t
+  v_t=beta2*v_(t-1)+(1-beta2)*g_t^2
+  m_hat=m_t/(1-beta1^t), v_hat=v_t/(1-beta2^t)
+  theta=theta-lr*m_hat/(sqrt(v_hat)+eps)
+  此处是把 L2 梯度加入 Adam，不是解耦权重衰减 AdamW。
+
+工程说明：本程序提供基础异常提示、固定随机种子、验证集早停、
+最佳权重保存、测试集逐类指标、混淆矩阵、有限差分梯度检查及画板。
+保存的是推理所需的模型和配置，不保存 Adam 状态，不支持精确断点续训。
+代码未预置已训练权重；实际准确率和耗时以本机运行输出为准。
+"""
